@@ -49,10 +49,12 @@ def allowed_file(filename: str) -> bool:
 # ----------------------------------
 # Home (optional UI)
 # ----------------------------------
-@app.route("/")
-def index():
-    stats = course_manager.get_statistics()
-    return render_template("index.html", stats=stats)
+@app.route("/", methods=["GET"])
+def root():
+    return jsonify({
+        "status": "ok",
+        "service": "mooc-resume-feature-api"
+    }), 200
 
 # ----------------------------------
 # Upload Resume (API)
