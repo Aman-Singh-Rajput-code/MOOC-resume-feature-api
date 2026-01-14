@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
+import ast
 from werkzeug.utils import secure_filename
 
 from config import Config
@@ -15,7 +16,7 @@ app = Flask(__name__)
 app.config.from_object(Config)
 
 # ✅ Enable CORS for React / MERN
-CORS(app, supports_credentials=True)
+CORS(app)
 
 # ----------------------------------
 # Prepare upload folder
@@ -46,35 +47,47 @@ def allowed_file(filename: str) -> bool:
         in app.config["ALLOWED_EXTENSIONS"]
     )
 
+
 def extract_course_url(rec: dict) -> str:
     """
-    🔥 NORMALIZE ALL POSSIBLE LINK FORMATS INTO ONE STRING
+    ✅ FINAL LINK NORMALIZER
+    Handles:
+    - course_url
+    - course_link
+    - url
+    - course_href
+    - sources (string)
+    - sources (stringified list)
     """
 
     # 1️⃣ Direct fields
     for key in ["course_url", "course_link", "url", "course_href"]:
         val = rec.get(key)
         if isinstance(val, str) and val.startswith("http"):
-            return val
+            return val.strip()
 
-    # 2️⃣ sources field (list)
-    sources = rec.get("sources")
+    # 2️⃣ Sources column (MOST IMPORTANT)
+    src = rec.get("sources")
 
-    if isinstance(sources, list) and len(sources) > 0:
-        first = sources[0]
+    if not src:
+        return ""
 
-        # sources = ["https://..."]
-        if isinstance(first, str) and first.startswith("http"):
-            return first
+    # Case A: already a URL string
+    if isinstance(src, str) and src.startswith("http"):
+        return src.strip()
 
-        # sources = [{"url": "..."}]
-        if isinstance(first, dict):
-            for k in ["url", "course_url", "course_link", "href"]:
-                v = first.get(k)
-                if isinstance(v, str) and v.startswith("http"):
-                    return v
+    # Case B: stringified list → "['https://...']"
+    if isinstance(src, str):
+        try:
+            parsed = ast.literal_eval(src)
+            if isinstance(parsed, list) and len(parsed) > 0:
+                if isinstance(parsed[0], str) and parsed[0].startswith("http"):
+                    return parsed[0].strip()
+        except Exception:
+            pass
 
     return ""
+
 
 # ----------------------------------
 # Root health check
@@ -86,14 +99,12 @@ def root():
         "service": "mooc-resume-feature-api"
     }), 200
 
+
 # ----------------------------------
 # Upload Resume (API)
 # ----------------------------------
-@app.route("/upload", methods=["POST", "OPTIONS"])
+@app.route("/upload", methods=["POST"])
 def upload_resume():
-    if request.method == "OPTIONS":
-        return jsonify({"ok": True}), 200
-
     if "resume" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -137,16 +148,15 @@ def upload_resume():
 
     except Exception as e:
         print("Upload error:", e)
-        return jsonify({
-            "error": "Failed to process resume"
-        }), 500
+        return jsonify({"error": "Failed to process resume"}), 500
 
     finally:
         if filepath and os.path.exists(filepath):
             os.remove(filepath)
 
+
 # ----------------------------------
-# Recommendation formatter (🔥 FIXED)
+# Recommendation formatter
 # ----------------------------------
 def format_recommendations(recommendations):
     formatted = []
@@ -163,11 +173,12 @@ def format_recommendations(recommendations):
             "match_percentage": rec.get("match_percentage", 0),
             "match_reasons": rec.get("match_reasons", []),
 
-            # ✅ SINGLE SOURCE OF TRUTH
+            # ✅ FIXED FOR REAL
             "course_url": extract_course_url(rec)
         })
 
     return formatted
+
 
 # ----------------------------------
 # Supporting APIs
@@ -177,12 +188,14 @@ def get_courses():
     courses = course_manager.get_all_courses()
     return jsonify({"courses": courses, "total": len(courses)}), 200
 
+
 @app.route("/api/course/<course_id>")
 def get_course(course_id):
     course = course_manager.get_course_by_id(course_id)
     if course:
         return jsonify(course), 200
     return jsonify({"error": "Course not found"}), 404
+
 
 @app.route("/api/search")
 def search_courses():
@@ -191,9 +204,11 @@ def search_courses():
     results = course_manager.search_courses(query, limit)
     return jsonify({"results": results, "total": len(results)}), 200
 
+
 @app.route("/api/stats")
 def get_stats():
     return jsonify(course_manager.get_statistics()), 200
+
 
 # ----------------------------------
 # Error handlers
@@ -202,13 +217,16 @@ def get_stats():
 def too_large(e):
     return jsonify({"error": "File too large (max 16MB)"}), 413
 
+
 @app.errorhandler(404)
 def not_found(e):
     return jsonify({"error": "Endpoint not found"}), 404
 
+
 @app.errorhandler(500)
 def server_error(e):
     return jsonify({"error": "Internal server error"}), 500
+
 
 # ----------------------------------
 # Local run
