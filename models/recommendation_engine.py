@@ -268,7 +268,7 @@ import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from typing import List, Dict
+from typing import Dict
 from config import Config
 
 
@@ -278,7 +278,7 @@ class RecommendationEngine:
     def __init__(self, course_manager):
         self.course_manager = course_manager
         self.vectorizer = TfidfVectorizer(
-            max_features=500,
+            max_features=1000,   # 🔥 increased
             stop_words='english',
             ngram_range=(1, 2),
             min_df=1
@@ -302,26 +302,41 @@ class RecommendationEngine:
         print(f"Prepared vectors for {len(course_texts)} courses")
 
     # ------------------------------
-    # RESUME VECTOR
+    # 🔥 IMPROVED RESUME VECTOR (MAIN FIX)
     # ------------------------------
     def create_resume_vector(self, resume_analysis: Dict):
+
         resume_text_parts = []
 
-        if resume_analysis.get('skills'):
-            skills_text = ' '.join(resume_analysis['skills']) * 3
+        # 🔥 STEP 1: STRONG SKILL BOOST
+        skills = resume_analysis.get("skills", [])
+        if skills:
+            skills_text = " ".join(skills * 10)   # 🔥 BIG BOOST
             resume_text_parts.append(skills_text)
 
-        if resume_analysis.get('domains'):
-            domains_text = ' '.join(resume_analysis['domains']) * 2
+        # 🔥 STEP 2: DOMAIN BOOST
+        domains = resume_analysis.get("domains", [])
+        if domains:
+            domains_text = " ".join(domains * 5)
             resume_text_parts.append(domains_text)
 
-        if resume_analysis.get('education'):
-            resume_text_parts.append(' '.join(resume_analysis['education']))
+        # 🔥 STEP 3: QUERY STYLE TEXT (VERY IMPORTANT)
+        if skills:
+            query_style = " ".join(skills) + " course tutorial learning roadmap"
+            resume_text_parts.append(query_style)
 
-        if resume_analysis.get('full_text'):
-            resume_text_parts.append(resume_analysis['full_text'])
+        # 🔥 STEP 4: EDUCATION (LOW WEIGHT)
+        if resume_analysis.get("education"):
+            resume_text_parts.append(" ".join(resume_analysis["education"]))
 
-        resume_text = ' '.join(resume_text_parts)
+        # 🔥 STEP 5: FULL TEXT (LOWEST WEIGHT)
+        if resume_analysis.get("full_text"):
+            resume_text_parts.append(resume_analysis["full_text"][:500])
+
+        # FINAL TEXT
+        resume_text = " ".join(resume_text_parts)
+
+        print("🔥 FINAL RESUME TEXT:", resume_text[:200])  # debug
 
         return self.vectorizer.transform([resume_text])
 
@@ -343,14 +358,21 @@ class RecommendationEngine:
         boosted_scores = similarities.copy()
 
         # Rating boost
-        rating_boost = df['course_rating'].values / 5.0 * 0.1
+        rating_boost = df['course_rating'].values / 5.0 * 0.15
         boosted_scores += rating_boost
 
         # Popularity boost
-        popularity_boost = df['popularity_score'].values * 0.1
+        popularity_boost = df['popularity_score'].values * 0.10
         boosted_scores += popularity_boost
 
-        # Free course boost (for beginners)
+        # 🔥 SKILL MATCH BOOST (NEW)
+        skills = resume_analysis.get("skills", [])
+        for i, row in df.iterrows():
+            text = str(row.get("combined_text", "")).lower()
+            if any(skill.lower() in text for skill in skills):
+                boosted_scores[i] += 0.20
+
+        # Beginner boost
         if resume_analysis.get('experience_level') == 'beginner':
             free_boost = (df['is_paid'] == 'Free').astype(float) * 0.05
             boosted_scores += free_boost
@@ -361,6 +383,7 @@ class RecommendationEngine:
     # MAIN FUNCTION
     # ------------------------------
     def get_recommendations(self, resume_analysis: Dict, top_n: int = None):
+
         if top_n is None:
             top_n = Config.TOP_N_RECOMMENDATIONS
 
@@ -380,8 +403,9 @@ class RecommendationEngine:
         ]
 
         df = self.course_manager.get_dataframe()
+
         recommendations = []
-        graph_data = []  # 🔥 NEW (for visualization)
+        graph_data = []
 
         for idx in top_indices:
             course = df.iloc[idx].to_dict()
