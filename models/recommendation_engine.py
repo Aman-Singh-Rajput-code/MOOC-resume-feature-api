@@ -1,3 +1,5 @@
+#safe file
+'''
 import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -259,4 +261,194 @@ class RecommendationEngine:
         if not reasons:
             reasons.append("Good match based on your profile")
         
-        return reasons[:3]  # Return top 3 reasons
+        return reasons[:3]  # Return top 3 reasons'''
+
+
+import pandas as pd
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from typing import List, Dict
+from config import Config
+
+
+class RecommendationEngine:
+    """Generate course recommendations based on resume analysis"""
+
+    def __init__(self, course_manager):
+        self.course_manager = course_manager
+        self.vectorizer = TfidfVectorizer(
+            max_features=500,
+            stop_words='english',
+            ngram_range=(1, 2),
+            min_df=1
+        )
+
+        self.prepare_course_vectors()
+
+    # ------------------------------
+    # VECTOR PREPARATION
+    # ------------------------------
+    def prepare_course_vectors(self):
+        df = self.course_manager.get_dataframe()
+
+        if df.empty:
+            self.course_vectors = None
+            return
+
+        course_texts = df['combined_text'].fillna('').tolist()
+        self.course_vectors = self.vectorizer.fit_transform(course_texts)
+
+        print(f"Prepared vectors for {len(course_texts)} courses")
+
+    # ------------------------------
+    # RESUME VECTOR
+    # ------------------------------
+    def create_resume_vector(self, resume_analysis: Dict):
+        resume_text_parts = []
+
+        if resume_analysis.get('skills'):
+            skills_text = ' '.join(resume_analysis['skills']) * 3
+            resume_text_parts.append(skills_text)
+
+        if resume_analysis.get('domains'):
+            domains_text = ' '.join(resume_analysis['domains']) * 2
+            resume_text_parts.append(domains_text)
+
+        if resume_analysis.get('education'):
+            resume_text_parts.append(' '.join(resume_analysis['education']))
+
+        if resume_analysis.get('full_text'):
+            resume_text_parts.append(resume_analysis['full_text'])
+
+        resume_text = ' '.join(resume_text_parts)
+
+        return self.vectorizer.transform([resume_text])
+
+    # ------------------------------
+    # SIMILARITY
+    # ------------------------------
+    def calculate_similarity_scores(self, resume_vector):
+        if self.course_vectors is None:
+            return np.array([])
+
+        similarities = cosine_similarity(resume_vector, self.course_vectors)
+        return similarities[0]
+
+    # ------------------------------
+    # BOOSTING
+    # ------------------------------
+    def apply_boosting(self, similarities, resume_analysis):
+        df = self.course_manager.get_dataframe()
+        boosted_scores = similarities.copy()
+
+        # Rating boost
+        rating_boost = df['course_rating'].values / 5.0 * 0.1
+        boosted_scores += rating_boost
+
+        # Popularity boost
+        popularity_boost = df['popularity_score'].values * 0.1
+        boosted_scores += popularity_boost
+
+        # Free course boost (for beginners)
+        if resume_analysis.get('experience_level') == 'beginner':
+            free_boost = (df['is_paid'] == 'Free').astype(float) * 0.05
+            boosted_scores += free_boost
+
+        return boosted_scores
+
+    # ------------------------------
+    # MAIN FUNCTION
+    # ------------------------------
+    def get_recommendations(self, resume_analysis: Dict, top_n: int = None):
+        if top_n is None:
+            top_n = Config.TOP_N_RECOMMENDATIONS
+
+        resume_vector = self.create_resume_vector(resume_analysis)
+        similarities = self.calculate_similarity_scores(resume_vector)
+
+        if len(similarities) == 0:
+            return {"courses": [], "graph_data": []}
+
+        final_scores = self.apply_boosting(similarities, resume_analysis)
+
+        top_indices = np.argsort(final_scores)[::-1][:top_n]
+
+        top_indices = [
+            idx for idx in top_indices
+            if final_scores[idx] >= Config.MIN_SIMILARITY_SCORE
+        ]
+
+        df = self.course_manager.get_dataframe()
+        recommendations = []
+        graph_data = []  # 🔥 NEW (for visualization)
+
+        for idx in top_indices:
+            course = df.iloc[idx].to_dict()
+
+            similarity = float(final_scores[idx])
+
+            course['similarity'] = round(similarity, 3)
+            course['match_percentage'] = min(100, int(similarity * 100))
+
+            course['match_reasons'] = self.generate_match_reasons(
+                course,
+                resume_analysis,
+                similarity
+            )
+
+            recommendations.append(course)
+
+            # 🔥 GRAPH DATA
+            graph_data.append({
+                "course_name": course.get("course_name", ""),
+                "similarity": round(similarity, 3)
+            })
+
+        return {
+            "courses": recommendations,
+            "graph_data": graph_data
+        }
+
+    # ------------------------------
+    # MATCH REASONS
+    # ------------------------------
+    def generate_match_reasons(self, course, resume_analysis, score):
+        reasons = []
+
+        course_text_lower = course['combined_text'].lower()
+
+        matched_skills = [
+            skill for skill in resume_analysis.get('skills', [])
+            if skill.lower() in course_text_lower
+        ]
+
+        if matched_skills:
+            reasons.append(f"Matches your skills: {', '.join(matched_skills[:5])}")
+
+        matched_domains = [
+            domain for domain in resume_analysis.get('domains', [])
+            if domain.replace('_', ' ') in course_text_lower
+        ]
+
+        if matched_domains:
+            domain_names = [d.replace('_', ' ').title() for d in matched_domains]
+            reasons.append(f"Aligns with your domain: {', '.join(domain_names)}")
+
+        if course.get('course_rating', 0) >= 4.5:
+            reasons.append(f"Highly rated ({course['course_rating']}/5)")
+
+        if course.get('Number_of_student_enrolled', 0) > 10000:
+            reasons.append(
+                f"Popular course with {int(course['Number_of_student_enrolled']):,} students"
+            )
+
+        user_level = resume_analysis.get('experience_level', 'intermediate')
+
+        if user_level in course_text_lower:
+            reasons.append(f"Suitable for {user_level} level")
+
+        if not reasons:
+            reasons.append("Good match based on your profile")
+
+        return reasons[:3]
